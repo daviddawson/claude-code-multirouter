@@ -223,6 +223,8 @@ Tool schemas are passed through with `strict: false` for Codex compatibility. Un
 
 Access the dashboard at `http://localhost:3456/dashboard` while the proxy is running.
 
+![Dashboard](dashboard-screenshot.png)
+
 Shows:
 - Request counts by provider
 - Token usage over time
