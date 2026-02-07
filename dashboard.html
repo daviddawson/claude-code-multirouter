@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Multi-Proxy — Usage Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f1117; color: #e1e4e8; padding: 20px; }
+  h1 { font-size: 1.4em; margin-bottom: 20px; color: #58a6ff; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 24px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+  .card h2 { font-size: 0.85em; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+  .card .value { font-size: 1.8em; font-weight: 600; }
+  .card .sub { font-size: 0.8em; color: #8b949e; margin-top: 4px; }
+  .chart-container { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 24px; }
+  .chart-container h2 { font-size: 0.95em; color: #8b949e; margin-bottom: 12px; }
+  canvas { max-height: 300px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #21262d; }
+  th { color: #8b949e; font-size: 0.8em; text-transform: uppercase; }
+  td { font-size: 0.9em; }
+  .provider-cerebras { color: #f0883e; }
+  .provider-anthropic { color: #a5d6ff; }
+  .provider-codex { color: #3fb950; }
+  .refresh-info { font-size: 0.75em; color: #484f58; margin-top: 16px; text-align: center; }
+  .cost { color: #3fb950; }
+</style>
+</head>
+<body>
+
+<h1>Claude Multi-Proxy — Usage Dashboard</h1>
+
+<div class="grid">
+  <div class="card">
+    <h2>Total Requests</h2>
+    <div class="value" id="total-requests">—</div>
+    <div class="sub" id="provider-breakdown">—</div>
+  </div>
+  <div class="card">
+    <h2>Total Tokens</h2>
+    <div class="value" id="total-tokens">—</div>
+    <div class="sub" id="token-breakdown">—</div>
+  </div>
+  <div class="card">
+    <h2>Cerebras Cost</h2>
+    <div class="value cost" id="total-cost">—</div>
+    <div class="sub">Anthropic + Codex via subscription (excluded)</div>
+  </div>
+</div>
+
+<div class="chart-container">
+  <h2>Requests Over Time</h2>
+  <canvas id="timeChart"></canvas>
+</div>
+
+<div class="chart-container">
+  <h2>Requests by Model</h2>
+  <canvas id="modelChart"></canvas>
+</div>
+
+<div class="chart-container">
+  <h2>Recent Requests</h2>
+  <table id="requestTable">
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>Model</th>
+        <th>Provider</th>
+        <th>Tokens (in/out)</th>
+        <th>Cost</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<div class="refresh-info">Auto-refreshes every 30 seconds</div>
+
+<script>
+const MODEL_COLORS = {
+  'qwen-3-235b-a22b-instruct-2507': '#f0883e',
+  'zai-glm-4.7': '#56d4dd',
+  'gpt-oss-120b': '#e3b341',
+  'claude-opus-4-6': '#bc8cff',
+  'claude-sonnet-4-5-20250929': '#a5d6ff',
+  'claude-haiku-4-5-20251001': '#7ee787',
+  'gpt-5.1-codex-mini': '#3fb950',
+  'gpt-5.1-codex': '#2ea043',
+  'gpt-5.1-codex-max': '#238636',
+  'gpt-5.2-codex': '#196c2e'
+};
+
+const MODEL_SHORT = {
+  'qwen-3-235b-a22b-instruct-2507': 'Qwen 3 235B',
+  'zai-glm-4.7': 'GLM 4.7',
+  'gpt-oss-120b': 'GPT-OSS 120B',
+  'claude-opus-4-6': 'Opus',
+  'claude-sonnet-4-5-20250929': 'Sonnet',
+  'claude-haiku-4-5-20251001': 'Haiku',
+  'gpt-5.1-codex-mini': 'Codex Mini',
+  'gpt-5.1-codex': 'Codex',
+  'gpt-5.1-codex-max': 'Codex Max',
+  'gpt-5.2-codex': 'Codex 5.2'
+};
+
+let timeChart, modelChart;
+let cachedData = null;
+
+async function fetchUsage() {
+  const res = await fetch('/api/usage');
+  const { entries, costs } = await res.json();
+  cachedData = { entries, costs };
+  return entries;
+}
+
+function estimateCost(entry) {
+  const costs = cachedData?.costs || {};
+  const c = costs[entry.model];
+  if (!c) return 0;
+  return ((entry.inputTokens || 0) * c.input + (entry.outputTokens || 0) * c.output) / 1000000;
+}
+
+function renderSummary(entries) {
+  const totalRequests = entries.length;
+  const cerebrasReqs = entries.filter(e => e.provider === 'cerebras').length;
+  const anthropicReqs = entries.filter(e => e.provider === 'anthropic').length;
+  const codexReqs = entries.filter(e => e.provider === 'codex').length;
+
+  const totalTokens = entries.reduce((sum, e) => sum + (e.inputTokens || 0) + (e.outputTokens || 0), 0);
+  const totalCost = entries.reduce((sum, e) => sum + estimateCost(e), 0);
+
+  document.getElementById('total-requests').textContent = totalRequests.toLocaleString();
+  document.getElementById('provider-breakdown').innerHTML =
+    `<span class="provider-cerebras">${cerebrasReqs} Cerebras</span> / <span class="provider-anthropic">${anthropicReqs} Anthropic</span> / <span class="provider-codex">${codexReqs} Codex</span>`;
+
+  document.getElementById('total-tokens').textContent = totalTokens.toLocaleString();
+  document.getElementById('token-breakdown').textContent = `Cache reads: ${entries.reduce((s,e) => s + (e.cacheReadTokens||0), 0).toLocaleString()}`;
+
+  document.getElementById('total-cost').textContent = `$${totalCost.toFixed(2)}`;
+}
+
+function renderTimeChart(entries) {
+  const hourly = {};
+  entries.forEach(e => {
+    const hour = new Date(e.timestamp).toISOString().slice(0, 13) + ':00';
+    hourly[hour] = (hourly[hour] || 0) + 1;
+  });
+
+  const labels = Object.keys(hourly).sort();
+  const data = labels.map(l => hourly[l]);
+
+  if (timeChart) timeChart.destroy();
+
+  const ctx = document.getElementById('timeChart').getContext('2d');
+  timeChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels.map(l => new Date(l).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit' })),
+      datasets: [{
+        label: 'Requests',
+        data: data,
+        borderColor: '#58a6ff',
+        backgroundColor: 'rgba(88, 166, 255, 0.1)',
+        tension: 0.3,
+        fill: true
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        y: {
+          beginAtZero: true,
+          ticks: { color: '#8b949e' },
+          grid: { color: '#21262d' }
+        },
+        x: {
+          ticks: { color: '#8b949e' },
+          grid: { color: '#21262d' }
+        }
+      }
+    }
+  });
+}
+
+function renderModelChart(entries) {
+  const modelCounts = {};
+  entries.forEach(e => {
+    const model = e.model || 'unknown';
+    modelCounts[model] = (modelCounts[model] || 0) + 1;
+  });
+
+  const models = Object.keys(modelCounts).sort((a, b) => modelCounts[b] - modelCounts[a]);
+  const counts = models.map(m => modelCounts[m]);
+  const colors = models.map(m => MODEL_COLORS[m] || '#8b949e');
+
+  if (modelChart) modelChart.destroy();
+
+  const ctx = document.getElementById('modelChart').getContext('2d');
+  modelChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: models.map(m => MODEL_SHORT[m] || m),
+      datasets: [{
+        label: 'Requests',
+        data: counts,
+        backgroundColor: colors,
+        borderColor: colors,
+        borderWidth: 1
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        y: {
+          beginAtZero: true,
+          ticks: { color: '#8b949e' },
+          grid: { color: '#21262d' }
+        },
+        x: {
+          ticks: { color: '#8b949e' },
+          grid: { color: '#21262d' }
+        }
+      }
+    }
+  });
+}
+
+function renderTable(entries) {
+  const tbody = document.querySelector('#requestTable tbody');
+  tbody.innerHTML = '';
+
+  entries.slice(-50).reverse().forEach(e => {
+    const row = tbody.insertRow();
+    const time = new Date(e.timestamp).toLocaleString('en-US', {
+      month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+    });
+    const model = MODEL_SHORT[e.model] || e.model || 'unknown';
+    const provider = e.provider || 'unknown';
+    const tokens = `${(e.inputTokens || 0).toLocaleString()} / ${(e.outputTokens || 0).toLocaleString()}`;
+    const cost = (e.provider === 'cerebras')
+      ? `$${estimateCost(e).toFixed(4)}`
+      : '<span style="color: #8b949e;">sub</span>';
+
+    row.innerHTML = `
+      <td>${time}</td>
+      <td>${model}</td>
+      <td class="provider-${provider}">${provider}</td>
+      <td>${tokens}</td>
+      <td class="cost">${cost}</td>
+    `;
+  });
+}
+
+async function refresh() {
+  const data = await fetchUsage();
+  renderSummary(data);
+  renderTimeChart(data);
+  renderModelChart(data);
+  renderTable(data);
+}
+
+refresh();
+setInterval(refresh, 30000);
+</script>
+
+</body>
+</html>

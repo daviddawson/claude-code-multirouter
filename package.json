@@ -1,0 +1,18 @@
+{
+  "name": "claude-multi-proxy",
+  "version": "1.0.0",
+  "description": "Unified multi-provider proxy for Claude Code (Anthropic, Cerebras, Codex)",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "fastify": "^5.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}
